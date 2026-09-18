@@ -1,0 +1,6 @@
+# Real config, including the AWS key and the tunnel token. NEVER commit.
+.env
+
+# OS/editor cruft
+.DS_Store
+*.swp

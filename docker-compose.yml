@@ -1,0 +1,144 @@
+# app-hub, always-on. The same three services that run on EKS, run on one host.
+#
+# GUIDED BUILD (CLAUDE.md section 2). Docker Compose is new here, so Claude
+# wrote this heavily commented and the owner runs every command.
+#
+# ===========================================================================
+# THIS IS A SECOND DEPLOYMENT TARGET, NOT A REPLACEMENT.
+#
+#   infra/ + manifests/   EKS. Created and destroyed per session. The learning
+#                         vehicle: Terraform, Kubernetes, observability, CI/CD.
+#   compose/ (here)       One host, always on. The dashboard actually used.
+#
+# They must not converge. The EKS path is never simplified to save money, and
+# this path never acquires Kubernetes. What they DO share is the image: the
+# same registry, the same tag, the same bytes. If that ever stops being true,
+# "it works on EKS" stops implying anything about here.
+# ===========================================================================
+
+services:
+
+  # --------------------------------------------------------------------------
+  # links-service -- the catalogue. Internal only.
+  # --------------------------------------------------------------------------
+  links-service:
+    image: ${ECR_HOST}/app-hub/links-service:${LINKS_SERVICE_TAG}
+    container_name: app-hub-links-service
+    # NO `ports:` BLOCK, ON PURPOSE, AND THIS IS THE WHOLE SHAPE OF THE FILE.
+    #
+    # `ports:` publishes to the HOST's interfaces. Nothing here needs that --
+    # gateway reaches these over the Compose network by service name, and the
+    # outside world reaches gateway through the tunnel. Publishing a port would
+    # put the catalogue API on the host's network for no reason.
+    #
+    # It mirrors what E-06 established on EKS: gateway public, the other two
+    # ClusterIP. Same architecture, different mechanism.
+    environment:
+      # Presence of this switches build_repository() from the in-memory dict to
+      # DynamoDB. Same table the EKS deployment writes to -- see README for why
+      # a shared table rather than something local.
+      LINKS_TABLE_NAME: ${LINKS_TABLE_NAME:-app-hub-links}
+      AWS_REGION: ${AWS_REGION:-ap-south-1}
+      # THERE IS NO IRSA OUTSIDE EKS. On the cluster a pod gets a short-lived,
+      # automatically-rotated identity with no stored secret. Here it is a real
+      # long-lived key on disk, which is exactly what learn/29 adopted IRSA to
+      # avoid. Scoped to four DynamoDB actions on one table -- see README.
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+    # `unless-stopped`, not the default `no`. On 2026-09-13 the n8n container
+    # was found Exited(137) and had needed a manual start -- its restart policy
+    # was `no`, and a watchdog whose container is not running cannot warn you
+    # about anything. An always-on service must come back by itself, including
+    # after a host reboot.
+    restart: unless-stopped
+    healthcheck:
+      # The image runs read-only with no shell utilities guaranteed, so this
+      # uses python rather than curl -- which is present by definition.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health',timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # --------------------------------------------------------------------------
+  # aggregator -- liveness probes. Internal only, and deliberately so.
+  # --------------------------------------------------------------------------
+  aggregator:
+    image: ${ECR_HOST}/app-hub/aggregator:${AGGREGATOR_TAG}
+    container_name: app-hub-aggregator
+    environment:
+      # PORT 8000, NOT 80, AND THIS IS THE TRAP WORTH READING TWICE.
+      #
+      # On EKS this value is http://links-service:80, because the Kubernetes
+      # Service maps 80 -> 8000. Compose has no Service object: the name
+      # resolves straight to the container, which listens on 8000.
+      #
+      # So the SAME variable needs a DIFFERENT value per target. That is worse
+      # than a variable that is merely unset, and it is the third costume of a
+      # bug this project has already paid for twice -- the 8000-vs-80 mix-up on
+      # 2026-09-10, and AGGREGATOR_URL missing entirely (D-21) on 2026-09-13.
+      LINKS_SERVICE_URL: http://links-service:8000
+    restart: unless-stopped
+    depends_on:
+      links-service:
+        condition: service_healthy
+
+  # --------------------------------------------------------------------------
+  # gateway -- the dashboard and the only thing the tunnel talks to.
+  # --------------------------------------------------------------------------
+  gateway:
+    image: ${ECR_HOST}/app-hub/gateway:${GATEWAY_TAG}
+    container_name: app-hub-gateway
+    environment:
+      LINKS_SERVICE_URL: http://links-service:8000
+      # 8002 both here and on EKS, because aggregator's Service happens to map
+      # 8002 -> 8002. Do NOT "fix" this to match the line above out of
+      # symmetry -- the numbers differ for a reason, and that reason is the
+      # Service definition, not a convention.
+      AGGREGATOR_URL: http://aggregator:8002
+    restart: unless-stopped
+    depends_on:
+      links-service:
+        condition: service_healthy
+      aggregator:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health',timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # --------------------------------------------------------------------------
+  # cloudflared -- the way in, without opening anything.
+  # --------------------------------------------------------------------------
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: app-hub-tunnel
+    command: tunnel --no-autoupdate run
+    environment:
+      # Created in the Cloudflare dashboard; it IS the credential for the
+      # tunnel. Lives in .env, which is gitignored.
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+# THE TUNNEL IS AN OUTBOUND CONNECTION, which is the whole point.
+#
+# cloudflared dials out to Cloudflare and holds the connection open; traffic
+# comes back down it. So:
+#   - no inbound port is opened on the host
+#   - no port forwarding on the home router
+#   - no dynamic DNS, no public IP needed
+#   - a home firewall that blocks everything inbound stays that way
+#
+# Route the tunnel's hostname to `http://gateway:8001` in the Cloudflare
+# dashboard -- cloudflared shares this Compose network, so it addresses gateway
+# by service name exactly as the other containers do.
+#
+# `latest` is deliberate here and nowhere else in this project. cloudflared is
+# a client to a service Cloudflare controls, and an old client eventually stops
+# being accepted; pinning it would create a break with no local cause. The
+# three app-hub images are pinned to exact tags, because those are ours.
