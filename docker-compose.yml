@@ -110,35 +110,102 @@ services:
       start_period: 15s
 
   # --------------------------------------------------------------------------
-  # cloudflared -- the way in, without opening anything.
+  # tailscale -- the way in, without opening anything.
+  #
+  # CHOSEN OVER CLOUDFLARE TUNNEL on 2026-09-18, and the deciding factor was the
+  # hostname, not the technology.
+  #
+  # A Cloudflare Tunnel's public hostname must live on a DOMAIN IN YOUR
+  # CLOUDFLARE ACCOUNT. This project owns no domain -- manifests/ingress/README.md
+  # has been waiting on one for its ACM certificate too -- and Cloudflare has no
+  # free equivalent of the *.pages.dev name that Pages hands out. The free
+  # option there is a Quick Tunnel, whose URL CHANGES ON EVERY RESTART, which is
+  # useless for the one thing this host exists to be: a bookmark.
+  #
+  # Tailscale gives a stable HTTPS hostname on the free Personal plan with no
+  # domain purchase:  https://<TS_HOSTNAME>.<your-tailnet>.ts.net
   # --------------------------------------------------------------------------
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: app-hub-tunnel
-    command: tunnel --no-autoupdate run
+  tailscale:
+    # `stable` rather than an exact version, and this is the ONLY floating tag
+    # in the project. Same reasoning the cloudflared entry used before it: this
+    # is a CLIENT to a service someone else operates, and an old client
+    # eventually stops being accepted -- pinning it would create a breakage with
+    # no local cause. The three app-hub images are pinned to exact git SHAs,
+    # because those are ours and reproducibility is the point.
+    image: tailscale/tailscale:stable
+    container_name: app-hub-tailscale
     environment:
-      # Created in the Cloudflare dashboard; it IS the credential for the
-      # tunnel. Lives in .env, which is gitignored.
-      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+      # ONE-TIME credential, from the admin console. After the first successful
+      # login the node identity lives in the state volume below and this can be
+      # left empty -- tailscaled will not ask again. It is needed a second time
+      # only if that volume is destroyed.
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
+      # THIS BECOMES THE URL.  app-hub -> https://app-hub.<tailnet>.ts.net
+      TS_HOSTNAME: ${TS_HOSTNAME:-app-hub}
+      # Where the node identity is kept. Points into the named volume below.
+      TS_STATE_DIR: /var/lib/tailscale
+      # The declarative serve/funnel config. Without this you would have to run
+      # `tailscale funnel` by hand after every recreate -- precisely the kind of
+      # manual step that works the first time and is forgotten the second.
+      TS_SERVE_CONFIG: /config/serve.json
+      # Userspace networking: no /dev/net/tun device, no NET_ADMIN capability,
+      # no privileged container. It works here because the serve/funnel proxy
+      # runs INSIDE tailscaled, so reaching gateway is an ordinary connection on
+      # the Compose network. Kernel mode is only needed to act as a subnet
+      # router or an exit node, and this is neither.
+      TS_USERSPACE: "true"
+    volumes:
+      # THE ONLY VOLUME IN THIS FILE, AND LOSING IT CHANGES YOUR URL.
+      #
+      # The node identity lives here. Destroy this volume and the container
+      # re-registers as a NEW node -- and because the old `app-hub` node still
+      # exists in the tailnet, Tailscale DOES NOT REUSE THE NAME. It appends a
+      # suffix. The URL silently becomes https://app-hub-1.<tailnet>.ts.net and
+      # every bookmark you made breaks, with nothing reporting an error.
+      #
+      # `docker compose down -v` is the command that does this. Plain
+      # `docker compose down` does not.
+      - tailscale-state:/var/lib/tailscale
+      - ./tailscale-serve.json:/config/serve.json:ro
     restart: unless-stopped
     depends_on:
       gateway:
         condition: service_healthy
 
-# THE TUNNEL IS AN OUTBOUND CONNECTION, which is the whole point.
+volumes:
+  tailscale-state:
+
+# THE CONNECTION IS OUTBOUND, which is the whole point and is unchanged from
+# the cloudflared design this replaced.
 #
-# cloudflared dials out to Cloudflare and holds the connection open; traffic
-# comes back down it. So:
+# tailscaled dials out to Tailscale and holds the connection open; traffic
+# arrives back down it. So:
 #   - no inbound port is opened on the host
 #   - no port forwarding on the home router
 #   - no dynamic DNS, no public IP needed
-#   - a home firewall that blocks everything inbound stays that way
+#   - a home firewall that blocks everything inbound stays exactly that way
 #
-# Route the tunnel's hostname to `http://gateway:8001` in the Cloudflare
-# dashboard -- cloudflared shares this Compose network, so it addresses gateway
-# by service name exactly as the other containers do.
+# ===========================================================================
+# FUNNEL IS PUBLIC, AND THE URL IS NOT A SECRET. Read this before trusting it.
 #
-# `latest` is deliberate here and nowhere else in this project. cloudflared is
-# a client to a service Cloudflare controls, and an old client eventually stops
-# being accepted; pinning it would create a break with no local cause. The
-# three app-hub images are pinned to exact tags, because those are ours.
+# `AllowFunnel` in tailscale-serve.json is what exposes this to the open
+# internet. Anyone who has the URL can load the dashboard. There is no login.
+#
+# And the URL is DISCOVERABLE. Funnel serves a real Let's Encrypt certificate,
+# and every certificate issued is published to Certificate Transparency logs,
+# which are public and searchable. Treat the hostname as known, not as hidden.
+#
+# That matters here specifically, because THE GATEWAY DASHBOARD DOES NOT FILTER
+# ON THE `public` FLAG. That flag governs site/projects.json -- the public page
+# on Cloudflare Pages -- and nothing else. The catalogue this dashboard renders
+# comes straight from DynamoDB and currently includes entries marked private:
+# `Notes`, `Acharya Amit Puri`, and a localhost URL.
+#
+# TO MAKE IT TAILNET-ONLY INSTEAD, which is arguably what a personal dashboard
+# actually wants: set "AllowFunnel" to false in tailscale-serve.json. It is then
+# reachable only from devices signed into your tailnet -- your phone, your
+# laptop -- on the same stable HTTPS hostname, still free, still no domain.
+#
+# The public face of this project is ALREADY site/ on Cloudflare Pages. This
+# host does not also have to be the portfolio piece.
+# ===========================================================================

@@ -75,9 +75,79 @@ the secret into Terraform state — a long-lived credential in S3, readable by
 anything that can read state. The user and policy are fine in Terraform; the
 key is not.
 
-**3. Create the Cloudflare Tunnel.** Zero Trust dashboard → Networks → Tunnels.
-Copy the token into `.env`. Route the hostname to **`http://gateway:8001`** —
-cloudflared shares the Compose network, so it addresses gateway by service name.
+**3. Set up Tailscale.** Five things, and the fifth is the one that bites six
+months from now.
+
+**Why Tailscale and not Cloudflare Tunnel** — a named Cloudflare Tunnel's public
+hostname must live on a **domain in your Cloudflare account**, and this project
+owns none. Cloudflare has no free equivalent of the `*.pages.dev` name that
+Pages hands out; the free option is a Quick Tunnel, whose URL changes on every
+restart. Tailscale gives a stable HTTPS hostname on the free plan with no domain
+purchase.
+
+**(a) Create the account** — free Personal plan at `login.tailscale.com`. Yours
+to do; I do not create accounts.
+
+**(b) Enable HTTPS certificates.** Admin console → **DNS** → *Enable HTTPS*.
+Without it there is no certificate and Funnel cannot serve TLS at all.
+
+**(c) Enable Funnel**, which is **off by default for a tailnet**. Admin console
+→ **Access controls**, add to the policy file:
+
+```json
+"nodeAttrs": [
+  {
+    "target": ["autogroup:member"],
+    "attr": ["funnel"]
+  }
+]
+```
+
+Skip this and the container starts, logs in, reports healthy, and is simply not
+reachable from outside — a failure that reads as a networking problem and is a
+permissions one.
+
+**(d) Generate an auth key.** Settings → **Keys** → *Generate auth key*.
+**Reusable**, **not ephemeral**: an ephemeral node is deleted when it goes
+offline, and the hostname is what the URL is built from. Into `.env` as
+`TS_AUTHKEY`.
+
+**(e) Once it has joined, turn OFF key expiry for this node.** Machines → the
+`app-hub` node → **Disable key expiry**. Node keys expire after 180 days by
+default; when one does, the node drops off the tailnet and the dashboard goes
+dark for no visible reason, half a year from now, long after anyone would
+connect it to this step. An always-on host wants a non-expiring node key.
+
+Your URL is then **`https://app-hub.<your-tailnet>.ts.net`**. The exact tailnet
+name is in the admin console header, or:
+
+```bash
+docker compose exec tailscale tailscale status
+```
+
+---
+
+### Funnel is public, and the URL is not a secret
+
+`AllowFunnel` in `tailscale-serve.json` is what exposes this to the open
+internet. **Anyone with the URL can load the dashboard — there is no login.**
+
+And the URL is discoverable: Funnel serves a real Let's Encrypt certificate, and
+every issued certificate is published to **Certificate Transparency logs**,
+which are public and searchable. Treat the hostname as known, not hidden.
+
+That matters here specifically, because **the gateway dashboard does not filter
+on the `public` flag.** That flag governs `site/projects.json` — the Cloudflare
+Pages site — and nothing else. This dashboard renders the DynamoDB catalogue
+directly, which currently includes entries marked private: `Notes`,
+`Acharya Amit Puri`, and a `localhost` URL.
+
+**To make it tailnet-only instead**, which is arguably what a personal dashboard
+wants, set `"AllowFunnel"` to `false` in `tailscale-serve.json`. It stays on the
+same stable HTTPS hostname, still free, still no domain — but only devices
+signed into your tailnet (your phone, your laptop) can reach it. The public face
+of this project is already `site/` on Cloudflare Pages; **this host does not
+also have to be the portfolio piece.**
 
 **4. Fill in `.env`:**
 
@@ -124,11 +194,18 @@ buys, and it is the claim worth testing rather than assuming:
 aws dynamodb scan --table-name app-hub-links --region ap-south-1 --select COUNT --query Count --output text
 ```
 
-**Then the tunnel**, from a network that is not your home one — a phone on
-mobile data is the honest test:
+**Then the public URL**, from a network that is not your home one — a phone on
+mobile data is the honest test. A phone on your home wifi proves nothing:
 
 ```
-https://<your-tunnel-hostname>/
+https://app-hub.<your-tailnet>.ts.net
+```
+
+If it does not answer, check Funnel is actually enabled before suspecting
+anything else — it is off by default per tailnet, and that is the usual cause:
+
+```bash
+docker compose exec tailscale tailscale funnel status
 ```
 
 **Confirm nothing is listening on the host**, which is the point of the tunnel:
@@ -161,7 +238,8 @@ symmetry.**
 
 **Must differ — credentials.** IRSA does not exist here. See above.
 
-**Must differ — the edge.** ALB + Ingress there; Cloudflare Tunnel here.
+**Must differ — the edge.** ALB + Ingress there; **Tailscale Funnel** here. Both
+are outbound-only in spirit: nothing listens on the host either way.
 
 ---
 
@@ -195,7 +273,16 @@ reconciling two datasets with conflicting ids.
   the host, or you will rediscover it.
 - **Something must watch the watcher.** If this host goes down, nothing
   currently says so — and it cannot be this host that tells you.
-- **Cloudflare Tunnel is free but is a dependency you do not control.**
+- **Tailscale is free but is a dependency you do not control**, and the free
+  Personal plan's terms are theirs to change.
+- **The node key expires after 180 days unless you disable expiry**, and when
+  it does the dashboard goes dark with no local cause. See step 3(e).
+- **`docker compose down -v` changes your URL.** It destroys the state volume,
+  the node re-registers, and because the old `app-hub` node still exists
+  Tailscale appends a suffix — `app-hub-1`. Every bookmark breaks silently.
+  Plain `docker compose down` is safe.
+- **Funnel is public and its hostname is in Certificate Transparency logs.**
+  See the note in step 3.
 
 ---
 

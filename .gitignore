@@ -1,4 +1,5 @@
-# Real config, including the AWS key and the tunnel token. NEVER commit.
+# Real config, including the AWS secret key and the Tailscale auth key.
+# NEVER commit.
 .env
 
 # OS/editor cruft
