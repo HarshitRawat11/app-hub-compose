@@ -89,6 +89,8 @@ cp .env.example .env
 
 ## Deploy
 
+**The registry is durable as of 2026-09-18.** ECR used to live in the ephemeral Terraform stack, so the nightly `make down` deleted the repositories along with the cluster — which would have broken this host every night, with an error that reads like the login expiry below and is really a missing repository. The repositories are now in `infra/persistent/`, `prevent_destroy` is set, and `make down` no longer empties them.
+
 ECR authentication expires **every 12 hours**, so this is not one-time:
 
 ```bash
