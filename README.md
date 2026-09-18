@@ -40,14 +40,23 @@ is a redeploy, not a rethink.
 
 ## Before you start
 
-**1. Create the GitHub repo.** `HarshitRawat11/app-hub-compose`, then:
+**1. Get this repo onto the host.** It lives at
+`github.com/HarshitRawat11/app-hub-compose` — public, like the rest of app-hub.
+Nothing secret is committed here: `.env` is gitignored and `.env.example` holds
+only placeholders.
 
 ```bash
-wsl -e bash -lc "cd /mnt/c/Users/harshit.rawat/Documents/Projects/app-hub/compose && git remote add origin git@github.com:HarshitRawat11/app-hub-compose.git"
+git clone git@github.com:HarshitRawat11/app-hub-compose.git && cd app-hub-compose
 ```
 
-Git identity is already set **locally** in this repo — this is a work-managed
-laptop and personal commits must not carry the work identity.
+The host needs **git, docker and the Compose plugin, and nothing else.** The
+services arrive as images from ECR, not as source — there is no build step
+here and there should never be one, because the whole point is that the host
+runs the same bytes the cluster runs.
+
+*(Git identity in this repo is set **locally**, not globally — the development
+machine is work-managed and personal commits must not carry the work identity.
+That matters when committing from the dev box, not on the host.)*
 
 **2. Create the IAM user.** This is the one genuinely new AWS object, and it is
 the security decision worth getting right.
