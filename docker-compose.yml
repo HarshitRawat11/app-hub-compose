@@ -110,6 +110,65 @@ services:
       start_period: 15s
 
   # --------------------------------------------------------------------------
+  # n8n -- the automation instance. N-06, RE-TARGETED 2026-09-20.
+  #
+  # N-06 originally read "move n8n onto the EKS cluster", decided 2026-08-30.
+  # That decision predated this host existing, and three things make EKS the
+  # wrong home now:
+  #
+  #   1. It would need a Postgres that survives the nightly destroy -- an RDS
+  #      billing permanently, which breaks the $0 resting state that
+  #      FINISH-LINE.md's O10 now makes a criterion.
+  #   2. It would put the COST WATCHDOG on the very cluster it watches. Every
+  #      `make down` would destroy the thing whose job is to tell you the
+  #      cluster is still running.
+  #   3. It would need N8N_ENCRYPTION_KEY handed over as a Kubernetes Secret.
+  #      Here that problem simply does not exist -- see the volume note below.
+  #
+  # This host is always on, costs nothing extra, and already runs n8n today as
+  # a standalone `docker run`. Bringing it under Compose is the whole change.
+  # --------------------------------------------------------------------------
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    container_name: n8n
+    environment:
+      # BOTH, AND NOT NEGOTIABLE. D-22: the watchdog could never fire because
+      # the container ran UTC while the Schedule Trigger was written in IST,
+      # so "17:00" meant 22:30 local and nothing ever happened at the intended
+      # hour. Setting only one of these is not enough.
+      TZ: ${N8N_TZ:-Asia/Kolkata}
+      GENERIC_TIMEZONE: ${N8N_TZ:-Asia/Kolkata}
+    volumes:
+      # ======================================================================
+      # THE SINGLE MOST DANGEROUS LINE IN THIS FILE.
+      #
+      # `n8n_data` is declared EXTERNAL at the bottom, which makes Compose
+      # attach the volume that ALREADY EXISTS rather than creating one.
+      #
+      # Without `external: true`, Compose would create a NEW, EMPTY volume
+      # named `compose_n8n_data`. n8n would start, find no config, generate a
+      # FRESH ENCRYPTION KEY -- and every stored credential in the old volume
+      # becomes permanently undecryptable. The workflows would still be there
+      # and every credential inside them would be rubble.
+      #
+      # Verified 2026-09-20: the live volume holds `config` (which carries
+      # encryptionKey), `database.sqlite`, `nodes/` and `storage/`. That is why
+      # this re-targeting needs no Secret handling at all -- the key travels
+      # with the volume and is never typed, printed, or passed to anything.
+      #
+      # N-05 exists because this class of loss was foreseen. Do not "clean up"
+      # this line.
+      # ======================================================================
+      - n8n_data:/home/node/.n8n
+    restart: unless-stopped
+    # NO `ports:` BLOCK, DELIBERATELY -- AND THIS IS A SECURITY IMPROVEMENT.
+    #
+    # The standalone container this replaces published 5678 on 0.0.0.0, so the
+    # automation admin UI -- which holds every credential -- was reachable from
+    # anything on the network. Under Compose it is reachable only through the
+    # tailscale container, and only over the tailnet. See tailscale-serve.json.
+
+  # --------------------------------------------------------------------------
   # tailscale -- the way in, without opening anything.
   #
   # CHOSEN OVER CLOUDFLARE TUNNEL on 2026-09-18, and the deciding factor was the
@@ -171,9 +230,20 @@ services:
     depends_on:
       gateway:
         condition: service_healthy
+      # n8n has no healthcheck here, so service_started: the tailnet route to
+      # it can come up slightly before n8n is answering, and a refresh fixes
+      # that. Not worth a healthcheck that would delay the public dashboard.
+      n8n:
+        condition: service_started
 
 volumes:
   tailscale-state:
+
+  # EXTERNAL: attach the volume that already exists, never create one.
+  # See the long note on the n8n service above -- getting this wrong makes
+  # every stored n8n credential permanently undecryptable.
+  n8n_data:
+    external: true
 
 # THE CONNECTION IS OUTBOUND, which is the whole point and is unchanged from
 # the cloudflared design this replaced.

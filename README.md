@@ -262,6 +262,79 @@ reconciling two datasets with conflicting ids.
 
 ---
 
+## n8n lives here now (`N-06`, re-targeted 2026-09-20)
+
+`N-06` originally said *"move n8n onto the EKS cluster"*, decided 2026-08-30.
+This host is the better answer, and the reasoning is worth keeping:
+
+- EKS would need a **Postgres surviving the nightly destroy** — an RDS billing
+  permanently, which breaks the `$0` resting state `FINISH-LINE.md`'s `O10`
+  now makes a criterion.
+- EKS would put the **cost watchdog on the cluster it watches**. Every
+  `make down` would destroy the thing whose job is to say the cluster is up.
+- EKS would need `N8N_ENCRYPTION_KEY` as a Kubernetes Secret. **Here that
+  problem does not exist**: the key lives inside the `n8n_data` volume and is
+  never typed, printed or passed anywhere.
+
+### The admin UI is tailnet-only, and that is deliberate
+
+| route | goes to | reachable by |
+|---|---|---|
+| `:443` | `gateway:8001` | **anyone** — Funnel, public |
+| `:8443` | `n8n:5678` | **your tailnet only** — Serve, not in `AllowFunnel` |
+
+n8n's UI holds every credential on the instance. It has no business on the
+public internet, and the dashboard has no business being private. One file
+expresses both.
+
+**This is also a security improvement over the container it replaces**, which
+published `5678` on `0.0.0.0` — reachable from anything on the local network.
+
+### Migrating the existing instance — read before running
+
+> **The `n8n_data` volume is the entire instance: workflows, credentials, and
+> the encryption key that makes the credentials readable.** `docker-compose.yml`
+> declares it `external: true` so Compose ATTACHES it rather than creating one.
+> If that ever became a non-external volume, n8n would start blank, generate a
+> fresh key, and **every stored credential would be permanently undecryptable.**
+
+**1. Confirm the volume exists before touching anything.**
+
+```bash
+docker volume ls | grep n8n_data
+```
+
+**2. Stop the standalone container — do NOT remove the volume.**
+
+```bash
+docker stop n8n && docker rm n8n
+```
+
+`docker rm` removes the *container*. The named volume survives; that is the
+whole point of it being named. Never pass `-v`.
+
+**3. Bring it up under Compose.**
+
+```bash
+docker compose up -d n8n
+```
+
+**4. Prove the credentials still decrypt — do not just check it starts.**
+
+A blank n8n also starts, and looks healthy. Open the UI and confirm a workflow
+that uses a credential (`eks-cost-watchdog` uses SMTP) still shows it bound
+rather than missing. **A workflow listing its credential as not-found is the
+symptom of a lost encryption key**, and it is not recoverable afterwards.
+
+```bash
+docker compose exec n8n ls /home/node/.n8n
+```
+
+`config`, `database.sqlite` and `nodes/` should be present — the same files the
+standalone container had.
+
+---
+
 ## Keeping it running — the annoying parts
 
 - **ECR login expires every 12 hours.** Any `docker compose pull` after that
