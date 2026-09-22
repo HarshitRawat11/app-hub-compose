@@ -70,6 +70,30 @@ one table, plus read-only ECR pull:
 | `ecr:GetAuthorizationToken` | `*` — account-level by the shape of the API |
 | `ecr:BatchGetImage`, `GetDownloadUrlForLayer`, `BatchCheckLayerAvailability` | the three app-hub repository ARNs |
 
+**The policy is written and ready to paste: [`iam-policy.json`](iam-policy.json).**
+IAM console → Users → *Create user* (no console access) → *Attach policies
+directly* → **Create policy** → **JSON** tab → paste the file → attach it to the
+new user → then *Security credentials* → *Create access key* → **Other**.
+
+**Every ARN in it was read from AWS, not constructed** — `describe-table` and
+`describe-repositories` — because `infra/irsa.tf` already carries the reason:
+an ARN built from account and region is *"silently wrong the day anything
+moves"*, and ECR moved once already (2026-09-18).
+
+**It validates clean against AWS IAM Access Analyzer**, with zero findings —
+and the check was proved capable of failing first, by running a deliberately
+bad policy through it and watching it return `INVALID_ACTION` and two security
+warnings. A validator that has never been seen to fail proves nothing:
+
+```bash
+wsl -e bash -lc "cd /mnt/c/Users/harshit.rawat/Documents/Projects/app-hub/compose && aws accessanalyzer validate-policy --policy-document file://iam-policy.json --policy-type IDENTITY_POLICY --region ap-south-1 --query 'findings[].issueCode' --output table"
+```
+
+**The four DynamoDB actions are the same four `infra/irsa.tf` grants the pod** —
+not a superset. If the EKS deployment can do it, this host can; if it cannot,
+neither can this. Divergence there would mean the two deployments behave
+differently against the same table, which is worse than either being wrong.
+
 **Create the access key by hand, not in Terraform.** `aws_iam_access_key` puts
 the secret into Terraform state — a long-lived credential in S3, readable by
 anything that can read state. The user and policy are fine in Terraform; the
@@ -91,17 +115,39 @@ to do; I do not create accounts.
 **(b) Enable HTTPS certificates.** Admin console → **DNS** → *Enable HTTPS*.
 Without it there is no certificate and Funnel cannot serve TLS at all.
 
-**(c) Enable Funnel**, which is **off by default for a tailnet**. Admin console
-→ **Access controls**, add to the policy file:
+**(c) Enable Funnel**, which is **off by default for a tailnet**. The complete
+policy file is written and ready to paste:
+[`tailscale-acl.hujson`](tailscale-acl.hujson). Admin console → **Access
+controls** → replace the document → **Save**.
 
-```json
-"nodeAttrs": [
-  {
-    "target": ["autogroup:member"],
-    "attr": ["funnel"]
-  }
-]
-```
+> **It is the WHOLE file, not a fragment, and that is deliberate.** That screen
+> edits one document for the entire tailnet. Pasting only a `nodeAttrs` block
+> replaces everything else, including the `acls` rule that lets your own devices
+> reach each other — you would cut yourself off from n8n while fixing Funnel.
+
+**It scopes Funnel to `tag:app-hub`, not to `autogroup:member`** — a deliberate
+change from what this README said before, for two reasons:
+
+- **`autogroup:member` lets every device you own publish to the public
+  internet**, laptop included. One mistyped `tailscale funnel` command then
+  exposes something you did not mean to expose. The tag confines the capability
+  to this one host.
+- **Tagged devices do not have key expiry.** `learn/34` records *"node keys
+  expire at 180 days"* as a thing that will bite later: an untagged node drops
+  off the tailnet roughly six months in and the public URL stops working with
+  no change on your side. For a host whose entire job is to stay up, that is
+  the more valuable half. Confirm it on the **Machines** page — a tagged node
+  shows no expiry date.
+
+**The cost of tagging, stated so it does not surprise you:** the auth key must
+be generated **with that tag**, or the node comes up untagged, Funnel stays
+refused, and the symptom is a public URL that never answers. See `.env.example`.
+
+**Two different things control public exposure, and it is worth keeping them
+straight.** This file decides whether the node *may* use Funnel at all;
+`tailscale-serve.json` decides *which ports* are actually published. Funnel
+fails closed if either is wrong, and the failure looks like a network problem
+both times.
 
 Skip this and the container starts, logs in, reports healthy, and is simply not
 reachable from outside — a failure that reads as a networking problem and is a

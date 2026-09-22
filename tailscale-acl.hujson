@@ -1,0 +1,80 @@
+// Tailscale access control policy for the app-hub always-on host (P-11 / G1).
+//
+// WHERE THIS GOES: login.tailscale.com -> Access controls. That screen edits ONE
+// document for the whole tailnet, so this is the complete file, not a fragment --
+// pasting a fragment replaces everything and cuts off your other devices.
+//
+// The format is HuJSON: JSON that allows comments and trailing commas. The admin
+// console accepts it as written, comments included.
+//
+// ---------------------------------------------------------------------------
+// WHAT THIS HAS TO ACHIEVE, and it is two different things on two ports:
+//
+//   :443  -> gateway:8001   PUBLIC via Funnel  -- anyone on the internet
+//   :8443 -> n8n:5678       TAILNET ONLY       -- only your own devices
+//
+// The split is enforced in compose/tailscale-serve.json by which ports appear
+// under "AllowFunnel". THIS file decides something different and prior: whether
+// the node is ALLOWED to use Funnel at all. Funnel is off by default for a
+// tailnet, and without the nodeAttrs block below it silently will not serve --
+// a failure that looks like networking and is really authorization.
+// ---------------------------------------------------------------------------
+{
+	// -------------------------------------------------------------------------
+	// acls -- who may reach what INSIDE the tailnet.
+	//
+	// This is the permissive default a personal tailnet starts with, kept
+	// deliberately. Tightening it is a real option later, but doing it in the
+	// same change as enabling Funnel would make a broken n8n route ambiguous:
+	// you would not know whether the ACL or the serve config was at fault.
+	//
+	// This is what lets your laptop and phone reach n8n on :8443.
+	// -------------------------------------------------------------------------
+	"acls": [
+		{"action": "accept", "src": ["*"], "dst": ["*:*"]},
+	],
+
+	// -------------------------------------------------------------------------
+	// tagOwners -- declares tag:app-hub before anything can use it.
+	//
+	// A tag must be declared here or an auth key carrying it is REJECTED at
+	// login, with an error that reads like a bad key rather than a missing tag.
+	// -------------------------------------------------------------------------
+	"tagOwners": {
+		"tag:app-hub": ["autogroup:admin"],
+	},
+
+	// -------------------------------------------------------------------------
+	// nodeAttrs -- THE LINE THAT ENABLES FUNNEL. Without it, everything else is
+	// configured correctly and the public URL still does not answer.
+	//
+	// TARGETED AT tag:app-hub RATHER THAN autogroup:member, and the difference
+	// is worth understanding because the easier option is the looser one:
+	//
+	//   autogroup:member  -> EVERY device you own may publish to the public
+	//                        internet, including your laptop. One mistyped
+	//                        `tailscale funnel` command then exposes something
+	//                        you did not mean to expose.
+	//   tag:app-hub       -> only this host can. Nothing else in the tailnet
+	//                        gains the capability.
+	//
+	// The second reason to tag is not about security at all: TAGGED DEVICES DO
+	// NOT HAVE KEY EXPIRY. learn/34 records "node keys expire at 180 days" as a
+	// thing that will bite later -- an untagged node silently drops off the
+	// tailnet roughly six months in, and the public URL stops working with no
+	// change on your side. Tagging removes that failure mode entirely, which
+	// matters for a host whose whole job is to stay up. Confirm it on the
+	// Machines page: a tagged node shows no expiry date.
+	//
+	// THE COST, stated plainly: the auth key must be generated WITH this tag
+	// (Settings -> Keys -> Generate -> tick Reusable, then select tag:app-hub).
+	// A key without the tag produces an untagged node, Funnel stays refused, and
+	// the symptom is a public URL that does not answer.
+	// -------------------------------------------------------------------------
+	"nodeAttrs": [
+		{
+			"target": ["tag:app-hub"],
+			"attr":   ["funnel"],
+		},
+	],
+}
