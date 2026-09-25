@@ -96,6 +96,39 @@ services:
       # symmetry -- the numbers differ for a reason, and that reason is the
       # Service definition, not a convention.
       AGGREGATOR_URL: http://aggregator:8002
+
+    # ------------------------------------------------------------------------
+    # THE ONE PUBLISHED PORT IN THIS FILE, AND THE `127.0.0.1:` PREFIX IS THE
+    # WHOLE POINT. Added 2026-09-25.
+    #
+    # WHY IT EXISTS: the host running these containers is NOT automatically a
+    # member of the tailnet. The Tailscale node lives INSIDE the tailscale
+    # container; the host never joins. So with tailnet-only serving and no
+    # Tailscale client installed, the machine actually running the dashboard
+    # was the one machine that could not open it. Measured, not assumed: the
+    # tailnet had exactly one device -- the container itself.
+    #
+    # `127.0.0.1:8001:8001` binds to LOOPBACK ONLY. Nothing on the LAN, the
+    # office network or a coffee-shop wifi can reach it; only a process on this
+    # host can. Verify rather than trust the comment:
+    #
+    #   docker compose ps          -> must show 127.0.0.1:8001->8001/tcp
+    #   netstat -ano | grep 8001   -> must NOT show 0.0.0.0:8001
+    #
+    # THIS IS NOT A HOLE IN THE "NO PUBLISHED PORTS" RULE, and the distinction
+    # matters. That rule was written against the standalone n8n container,
+    # which published 5678 on 0.0.0.0 -- an automation admin UI holding every
+    # credential on the instance, reachable from anything on the network. The
+    # difference between `0.0.0.0:` and `127.0.0.1:` is the difference between
+    # "everyone nearby" and "this machine". n8n still publishes nothing.
+    #
+    # It also does NOT replace Tailscale. This gets you the dashboard at the
+    # desk; the tailnet route is what gets you it from a phone or away from
+    # home. Install the client and both work.
+    # ------------------------------------------------------------------------
+    ports:
+      - "127.0.0.1:8001:8001"
+
     restart: unless-stopped
     depends_on:
       links-service:
