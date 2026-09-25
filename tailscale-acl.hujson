@@ -1,8 +1,18 @@
 // Tailscale access control policy for the app-hub always-on host (P-11 / G1).
 //
 // WHERE THIS GOES: login.tailscale.com -> Access controls. That screen edits ONE
-// document for the whole tailnet, so this is the complete file, not a fragment --
-// pasting a fragment replaces everything and cuts off your other devices.
+// document for the whole tailnet: whatever you save IS the entire policy. So this
+// is the complete file, not a fragment.
+//
+// REPLACING THE DEFAULT POLICY WITH THIS FILE IS THE INTENDED MOVE. The default
+// you see in the console is an allow-everything rule, and it is reproduced
+// verbatim below -- you are not giving anything up. What you gain is tagOwners
+// and nodeAttrs, without which Funnel cannot work at all.
+//
+// Before you save, compare against what is actually in YOUR console. If it holds
+// anything not reproduced here -- subnet routes, groups, extra acls rules, an
+// autoApprovers block -- carry it over. Saving discards whatever you leave out,
+// and it does so without warning.
 //
 // The format is HuJSON: JSON that allows comments and trailing commas. The admin
 // console accepts it as written, comments included.
@@ -32,6 +42,32 @@
 	// -------------------------------------------------------------------------
 	"acls": [
 		{"action": "accept", "src": ["*"], "dst": ["*:*"]},
+	],
+
+	// -------------------------------------------------------------------------
+	// ssh -- THIS IS NOT DECORATION. It restores a default you are about to
+	// destroy by saving this file at all.
+	//
+	// Tailscale's docs are explicit: "Tailnets that have NOT MODIFIED their
+	// tailnet policy file have a default SSH policy allowing users to access
+	// devices they own using check mode." The default is conditional on the
+	// file being untouched -- so the first time you save ANY edit, it is gone.
+	//
+	// Omitting this block would therefore not leave SSH "as it was". It would
+	// silently switch Tailscale SSH off across the whole tailnet, at the moment
+	// you were doing something unrelated to SSH. This is the exact rule
+	// Tailscale applies by default, reproduced so that saving changes nothing.
+	//
+	// If you have never used Tailscale SSH you can delete this block -- but
+	// delete it deliberately, rather than by leaving it out and not noticing.
+	// -------------------------------------------------------------------------
+	"ssh": [
+		{
+			"action": "check",
+			"src":    ["autogroup:member"],
+			"dst":    ["autogroup:self"],
+			"users":  ["autogroup:nonroot", "root"],
+		},
 	],
 
 	// -------------------------------------------------------------------------
