@@ -194,12 +194,43 @@ services:
       # ======================================================================
       - n8n_data:/home/node/.n8n
     restart: unless-stopped
-    # NO `ports:` BLOCK, DELIBERATELY -- AND THIS IS A SECURITY IMPROVEMENT.
+    # PUBLISHED ON LOOPBACK ONLY. Added 2026-09-27, and the reasoning changed
+    # twice, so read the whole note before "simplifying" it.
     #
-    # The standalone container this replaces published 5678 on 0.0.0.0, so the
-    # automation admin UI -- which holds every credential -- was reachable from
-    # anything on the network. Under Compose it is reachable only through the
-    # tailscale container, and only over the tailnet. See tailscale-serve.json.
+    # THERE WAS ORIGINALLY NO `ports:` BLOCK, deliberately. The standalone
+    # container this replaced published 5678 on 0.0.0.0 -- the automation admin
+    # UI, which holds every credential on the instance, reachable from anything
+    # on the network. Removing that was the security win of the G5 migration and
+    # it is NOT being undone here.
+    #
+    # WHAT THE MIGRATION ALSO DID, UNNOTICED FOR AN HOUR: it broke the teardown
+    # notification. scripts/scheduled-destroy.sh POSTs its result to
+    # $N8N_BASE_URL/webhook/destroy-status, which defaults to
+    # http://localhost:5678. That script runs in WSL, NOT in a container, so it
+    # cannot resolve `n8n:5678` on the Compose network. With nothing published
+    # the POST returned HTTP 000 -- could not connect -- so the nightly teardown
+    # would have reported nothing at all. That is D-25's exact failure mode,
+    # five days after D-25 was closed on evidence.
+    #
+    # ASK WHAT ELSE CONSUMES A SERVICE BEFORE CHANGING HOW IT IS REACHED. The
+    # same lesson ECR taught when it moved to the persistent stack.
+    #
+    # WHY LOOPBACK RATHER THAN THE TAILNET: the intended answer is the :8443
+    # route, which needs a second device on the tailnet. Installing the
+    # Tailscale client needs admin rights the owner does not currently have, so
+    # this is the AVAILABLE fix, not the preferred one.
+    #
+    # `127.0.0.1:` IS LOAD-BEARING -- the difference between "this machine" and
+    # "everyone on the network", the latter being what was wrong before. Verify
+    # rather than trust this comment:
+    #
+    #   docker compose ps                  -> 127.0.0.1:5678->5678/tcp
+    #   Test-NetConnection <lan-ip> -Port 5678  -> must be False
+    #
+    # REMOVE THIS BLOCK once a second device joins the tailnet and :8443 works,
+    # then point N8N_BASE_URL at the tailnet hostname instead.
+    ports:
+      - "127.0.0.1:5678:5678"
 
   # --------------------------------------------------------------------------
   # tailscale -- the way in, without opening anything.
