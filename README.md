@@ -386,6 +386,61 @@ docker compose exec n8n ls /home/node/.n8n
 `config`, `database.sqlite` and `nodes/` should be present — the same files the
 standalone container had.
 
+
+---
+
+## Joining a second device — the step that makes any of this reachable
+
+**A tailnet with one device serves nobody.** The Tailscale node lives *inside*
+the `tailscale` container, so the machine hosting these containers is **not**
+itself a member. Until a second device joins, `https://app-hub.<tailnet>.ts.net`
+answers nothing — from the host, from a phone, from anywhere. That is not a
+misconfiguration; it is arithmetic.
+
+**Install the client and sign in with the SAME account** that owns the tailnet.
+A different account creates a different tailnet and nothing changes, while every
+command still reports success.
+
+```powershell
+winget install --id Tailscale.Tailscale --exact
+```
+
+Needs elevation. On a work-managed machine that authenticates as the work admin.
+
+Then sign in, and **do not tag this device** — `tag:app-hub` is for the host
+container. A tagged device is not a member for ACL purposes, and the `acls` rule
+grants access from members.
+
+### Verify with three checks, not one
+
+```powershell
+tailscale status
+```
+
+Expect **two** devices. One is the `app-hub` container; the other is this
+machine, with a `100.x` address.
+
+```powershell
+Resolve-DnsName app-hub.<tailnet>.ts.net
+```
+
+**It must resolve to `100.x`, not to `209.177.x`.** A `209.177.x` answer means
+MagicDNS is not resolving and you are being sent to Tailscale's *public* Funnel
+ingress — which, with Funnel off, resets the connection. That failure looks like
+the service being down and is really DNS. Enable MagicDNS in the admin console
+if so.
+
+Then open both:
+
+| URL | what |
+|---|---|
+| `https://app-hub.<tailnet>.ts.net` | the dashboard |
+| `https://app-hub.<tailnet>.ts.net:8443` | **n8n's UI** |
+
+The second one is how the `D-33` API key gets regenerated — Settings → API.
+Until a device joins, that UI is unreachable by design, because the container
+publishes no ports.
+
 ---
 
 ## Keeping it running — the annoying parts
