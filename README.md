@@ -1,6 +1,13 @@
 # compose/ — app-hub, always on
 
-**Status: WRITTEN, NEVER DEPLOYED.** Nothing here has run on a host.
+**Status: DEPLOYED AND RUNNING since 2026-09-25 (laptop).** All five services are up: `links-service`, `gateway`, `aggregator`, `n8n` and `tailscale`. **n8n migrated onto this stack 2026-09-27** with its original `n8n_data` volume and its encryption key provably intact (`learn/38`).
+
+**Two things are deliberately not as this README first described them**, and both were the owner's call:
+
+- **Funnel is OFF.** `AllowFunnel` is `false`, so both routes are **tailnet-only**. The public URL was deferred until the catalogue was clean, because `gateway` does not filter on the `public` flag.
+- **`gateway` publishes `127.0.0.1:8001`.** The host running these containers is not itself a tailnet member — the Tailscale node lives *inside* the tailscale container — so with an empty tailnet the machine running the dashboard was the one machine that could not open it. Loopback only; nothing on the network can reach it.
+
+**Not yet met:** the Tailscale hostname still serves nobody, because the tailnet contains exactly one device (the container). Joining any second device fixes that.
 
 The second deployment target. The same three services that run on EKS, running
 on one machine that stays up — because a bookmark page does not justify
